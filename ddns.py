@@ -186,7 +186,7 @@ class DDNS:
             if r.status_code == 200:
                 r = r.text.split('<resource_record>')
                 for record in r:
-                    if record.find(self.host + '.' + self.domain) != -1:
+                    if record.find(f"<host>{self.host}{'.' if self.host else ''}{self.domain}") != -1:
                         r = record
                         break
                 r = r.split('</record_id>')
