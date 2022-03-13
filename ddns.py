@@ -30,11 +30,7 @@ class DDNS:
 
     ## 运行中调用
     apiRoot = "https://www.namesilo.com/api"
-    # ip138的api，由于每年更换一次域名，设为初始化时自动获取api域名
-    getIp = ""
-    # 添加了两个美国的备用api
-    getIPBack1 = "https://api.myip.com"
-    getIPBack2 = "https://api.ipify.org?format=json"
+    getIp = "2021.ip138.com"
     domainIp = ''
     currentIp = ''
     logger = None
@@ -95,17 +91,6 @@ class DDNS:
             self.logger.addHandler(fh)
         self.logger.info('\n\nstarting...')
 
-        r = None
-        try:
-            r = httpx.get("https://www.ip138.com/", headers=self.httpHeaders, timeout=10)
-            api = r.text.split("<iframe src=\"//")[1]
-            api = api.split("/\"")[0]
-            self.getIp = api
-        except Exception as e:
-            self.logger.exception(e)
-            if not self.getIp:
-                self.logger.info("__init__: 未正确获取ip138的api，将使用备用api")
-
     @staticmethod
     def archive_log():
         date = time.strftime("%Y%m%d-%H%M%S", time.localtime())
@@ -120,15 +105,6 @@ class DDNS:
         update self.currentIp
         :return: None
         """
-        if not self.getIp:
-            try:
-                self.get_current_ip_bk()
-            except Exception as e:
-                self.logger.error("get_current_ip: \tapi error")
-                self.check_error()
-                self.lastGetCurrentIpError = True
-            return
-
         r = None
         try:
             r = httpx.get('http://' + self.getIp, headers=self.httpHeaders, timeout=10)
@@ -146,33 +122,12 @@ class DDNS:
             r = r.split('您的IP地址是：')[1]
             r = r.split('</title>')[0]
             self.currentIp = r
-            self.logger.info("get_current_ip: \tcurrent host ip(ip138): " + r)
+            self.logger.info("get_current_ip: \tcurrent host ip: " + r)
             self.lastGetCurrentIpError = False
         else:
-            try:
-                self.get_current_ip_bk()
-            except Exception as e:
-                self.logger.exception(e)
-                self.logger.error("get_current_ip: \tapi error")
-                self.check_error()
-                self.lastGetCurrentIpError = True
-
-    def get_current_ip_bk(self):
-        # 备用
-        r = None
-        try:
-            r = httpx.get(self.getIPBack1, headers=self.httpHeaders, timeout=10)
-            r = r.json()
-            self.currentIp = r['ip']
-            self.logger.info("get_current_ip: \tcurrent host ip(myip): " + self.currentIp)
-            self.lastGetCurrentIpError = False
-        except Exception as e:
-            self.logger.exception(e)
-            r = httpx.get(self.getIPBack2, headers=self.httpHeaders, timeout=10)
-            r = r.json()
-            self.currentIp = r['ip']
-            self.logger.info("get_current_ip: \tcurrent host ip(ipify): " + self.currentIp)
-            self.lastGetCurrentIpError = False
+            self.logger.error("get_current_ip: \tapi error")
+            self.check_error()
+            self.lastGetCurrentIpError = True
 
     def get_domain_ip(self):
         """
@@ -186,7 +141,7 @@ class DDNS:
             if r.status_code == 200:
                 r = r.text.split('<resource_record>')
                 for record in r:
-                    if record.find(self.host + '.' + self.domain) != -1:
+                    if record.find(f"<host>{self.host}{'.' if self.host else ''}{self.domain}") != -1:
                         r = record
                         break
                 r = r.split('</record_id>')
@@ -290,10 +245,10 @@ class DDNS:
                 if self.emailAlert:
                     self.send_email('DDNS服务异常提醒', 'ddns_error_restart.email-template.html')
                 self.logger.error("check_error: \trestart - 连续错误6次，程序即将重启")
-                # 重启DDNS服务，确保python ddns.py的错误被记录，所以使用sh -c。subprocess.
+                # 重启DDNS服务，确保python ddns.py的错误被记录，所以使用bash -c。subprocess.
                 # Popen()本身无法单独追加到文件，需要传参stdout为open()文件，但主程序需要退出，让子进程单独运行，所以不可取
-                # 这里还是会丢掉sh命令的报错，但是无所谓，影响很小
-                Popen(['sh', '-c', 'nohup ' + sys.executable + ' ddns.py 3 >> log/DDNS.log  2>&1 &'])
+                # 这里还是会丢掉bash命令的报错，但是无所谓，影响很小
+                Popen(['bash', '-c', 'nohup ' + sys.executable + ' ddns.py 3 >> log/DDNS.log  2>&1 &'])
             else:
                 if self.emailAlert:
                     self.send_email('DDNS服务异常提醒', 'ddns_error_exit.email-template.html')
@@ -352,6 +307,7 @@ class DDNS:
                     self.update_domain_ip(self.currentIp)
                 self.lastStartError = False
             except Exception as e:
+                print(4455)
                 self.logger.exception(e)
                 self.check_error()
                 self.lastStartError = True
