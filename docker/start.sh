@@ -1,5 +1,6 @@
 #!/bin/sh
-if [ -d "/home/NameSilo-DDNS" ]; then
+if [ ! -d "/home/NameSilo-DDNS" ]; then
+    mkdir -p /home/NameSilo-DDNS/
     cp /home/NameSilo-DDNS.back/ddns.py /home/NameSilo-DDNS/ddns.py
     cp /home/NameSilo-DDNS.back/ddns-docker /home/NameSilo-DDNS/ddns-docker
     chmod +x /home/NameSilo-DDNS/ddns-docker

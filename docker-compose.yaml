@@ -1,0 +1,19 @@
+version: "3.8"
+
+x-logging: &default-logging
+  options:
+    max-size: "1g"
+    max-file: "5"
+  driver: json-file
+
+
+services:
+  namesilo-ddns:
+    build: .
+    container_name: ddns
+    restart: always
+    volumes:
+      - ./docker/start.sh:/start.sh
+      - ./conf/:/conf
+    logging: *default-logging
+    network_mode: host

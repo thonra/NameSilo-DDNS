@@ -4,12 +4,37 @@ import os
 import sys
 import time
 import smtplib
+import re
 from datetime import datetime
 from email.mime.text import MIMEText
 from platform import system as pl_system
-from subprocess import Popen
+from subprocess import Popen, PIPE, STDOUT
+from xml.etree.ElementTree import PI
 
 import httpx
+
+
+# https://gist.github.com/dfee/6ed3a4b05cfe7a6faf40a2102408d5d8
+
+IPV4SEG  = r'(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])'
+IPV6SEG  = r'(?:(?:[0-9a-fA-F]){1,4})'
+IPV4ADDR = r'(?:(?:' + IPV4SEG + r'\.){3,3}' + IPV4SEG + r')'
+IPV6GROUPS = (
+    r'(?:' + IPV6SEG + r':){7,7}' + IPV6SEG,                  # 1:2:3:4:5:6:7:8
+    r'(?:' + IPV6SEG + r':){1,7}:',                           # 1::                                 1:2:3:4:5:6:7::
+    r'(?:' + IPV6SEG + r':){1,6}:' + IPV6SEG,                 # 1::8               1:2:3:4:5:6::8   1:2:3:4:5:6::8
+    r'(?:' + IPV6SEG + r':){1,5}(?::' + IPV6SEG + r'){1,2}',  # 1::7:8             1:2:3:4:5::7:8   1:2:3:4:5::8
+    r'(?:' + IPV6SEG + r':){1,4}(?::' + IPV6SEG + r'){1,3}',  # 1::6:7:8           1:2:3:4::6:7:8   1:2:3:4::8
+    r'(?:' + IPV6SEG + r':){1,3}(?::' + IPV6SEG + r'){1,4}',  # 1::5:6:7:8         1:2:3::5:6:7:8   1:2:3::8
+    r'(?:' + IPV6SEG + r':){1,2}(?::' + IPV6SEG + r'){1,5}',  # 1::4:5:6:7:8       1:2::4:5:6:7:8   1:2::8
+    IPV6SEG + r':(?:(?::' + IPV6SEG + r'){1,6})',             # 1::3:4:5:6:7:8     1::3:4:5:6:7:8   1::8
+    r':(?:(?::' + IPV6SEG + r'){1,7}|:)',                     # ::2:3:4:5:6:7:8    ::2:3:4:5:6:7:8  ::8       ::
+    r'fe80:(?::' + IPV6SEG + r'){0,4}%[0-9a-zA-Z]{1,}',       # fe80::7:8%eth0     fe80::7:8%1  (link-local IPv6 addresses with zone index)
+    r'::(?:ffff(?::0{1,4}){0,1}:){0,1}[^\s:]' + IPV4ADDR,     # ::255.255.255.255  ::ffff:255.255.255.255  ::ffff:0:255.255.255.255 (IPv4-mapped IPv6 addresses and IPv4-translated addresses)
+    r'(?:' + IPV6SEG + r':){1,4}:[^\s:]' + IPV4ADDR,          # 2001:db8:3:4::192.0.2.33  64:ff9b::192.0.2.33 (IPv4-Embedded IPv6 Address)
+)
+
+IPV6ADDR = '|'.join(['(?:{})'.format(g) for g in IPV6GROUPS[::-1]])  # Reverse rows for greedy match
 
 
 class DDNS:
@@ -41,6 +66,7 @@ class DDNS:
     httpHeaders = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                                  'Chrome/96.0.4664.93 Safari/537.36'}
     rrid = ''
+    rrid_v6 = ''
     errorCount = 0
     lastGetCurrentIpError = False
     lastUpdateDomainIpError = False
@@ -174,6 +200,22 @@ class DDNS:
             self.logger.info("get_current_ip: \tcurrent host ip(ipify): " + self.currentIp)
             self.lastGetCurrentIpError = False
 
+    
+    def get_ipv6(self):
+        p = Popen('ip -6 address show', stdout=PIPE, stderr=STDOUT, shell=True)
+        for line in p.stdout.readlines():
+            line = str(line, encoding="GBK").strip()
+            if re.search("global dynamic mngtmpaddr noprefixroute", line):
+                addr = re.search(IPV6ADDR, line)
+                if addr:
+                    ipv6 = addr.group(0)
+                    self.logger.info("get_current_ipv6: \tcurrent host v6(myip): " + ipv6)
+                    return ipv6
+
+        self.logger.error("get_current_ipv6: \tnative methods error")
+
+
+
     def get_domain_ip(self):
         """
         update self.domainIp
@@ -188,11 +230,22 @@ class DDNS:
                 for record in r:
                     if record.find(f"<host>{self.host}{'.' if self.host else ''}{self.domain}") != -1:
                         r = record
-                        break
-                r = r.split('</record_id>')
-                self.rrid = r[0].split('<record_id>')[-1]
-                self.domainIp = r[1].split('<value>')[1].split('</value>')[0]
-                self.logger.info("get_domain_ip: \tcurrent domain name resolution ip: " + self.domainIp)
+                        r = r.split('</record_id>')
+                        _type = r[1].split('</type>')[0].split('<type>')[1]
+                        rrid = r[0].split('<record_id>')[-1]
+                        self.domainIp = r[1].split('<value>')[1].split('</value>')[0]
+                        if _type == "AAAA":
+                            self.rrid_v6 = rrid
+                        elif _type == "A":
+                            self.rrid = rrid
+                        self.logger.info("get_domain_ip: \tcurrent domain name resolution ip: " + self.domainIp)
+                        
+                        if self.rrid_v6 and self.rrid:
+                            break
+                else:
+                    self.logger.error("get_domain_ip: \tError, process stopped. "
+                                    "Failed to extract type A records.")
+                    exit(-1)
             else:
                 self.logger.error("get_domain_ip: \tError, process stopped. "
                                   "It could be due to the configuration file error, or the NameSilo server error.")
@@ -203,7 +256,7 @@ class DDNS:
                               "It could be due to the configuration file error, or the NameSilo server error.")
             exit(-1)
 
-    def update_domain_ip(self, new_ip):
+    def update_domain_ip(self, new_ip, v6=False):
         """
         重要 api
         更新域名解析，更新self.domainIp
@@ -212,7 +265,7 @@ class DDNS:
         try:
             r = httpx.get(
                 self.apiRoot + '/dnsUpdateRecord?version=1&type=xml&rrttl=7207&key=' + self.key + '&domain='
-                + self.domain + '&rrid=' + self.rrid + '&rrhost=' + self.host + '&rrvalue=' + new_ip, timeout=10)
+                + self.domain + '&rrid=' + f"{self.rrid_v6 if v6 else self.rrid}" + '&rrhost=' + self.host + '&rrvalue=' + new_ip, timeout=10)
             r = r.text
             r1 = r
             r = r.split('<code>')[1]
@@ -306,7 +359,7 @@ class DDNS:
         调试邮件配置是否正确
         """
         if not self.emailAlert:
-            print('Email configuration is not filled')
+            self.logger.error('Email configuration is not filled')
             return -1
         self.send_email('DDNS Service Test', 'test_email.email-template.html')
 
@@ -350,6 +403,9 @@ class DDNS:
                 self.get_current_ip()
                 if self.currentIp != self.domainIp:
                     self.update_domain_ip(self.currentIp)
+                ipv6 = self.get_ipv6()
+                if ipv6:
+                    self.update_domain_ip(ipv6, True)
                 self.lastStartError = False
             except Exception as e:
                 self.logger.exception(e)
@@ -362,6 +418,7 @@ if __name__ == '__main__':
     """
     不要开代理、梯子，会http连接错误
     """
+
     if len(sys.argv) > 1:
         if sys.argv[1] == 'archiveLog':
             DDNS.archive_log()
